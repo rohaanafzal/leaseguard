@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+# Real leases contain personal info — never commit them. Only the fake sample is tracked.
+data/sample_leases/*
+!data/sample_leases/sample_lease.pdf
+data/real_leases/
