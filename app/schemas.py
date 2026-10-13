@@ -1,62 +1,90 @@
-"""Extraction schemas — YOUR file to write (Day 1 task).
+"""Extraction schemas: the exact shape the LLM's answer must fit.
 
-What is a schema here?
-It's the exact shape we force the LLM's answer into. Instead of "tell me about
-the fees" (free text we can't compute with), we say "return a list of Fee
-objects with these fields." Pydantic then *validates* the answer: wrong types
-or missing fields raise an error instead of silently slipping through.
+Design decisions (the 4 questions):
+  1. Unknown amounts ("actual cost of repairs") -> amount is None, and
+     amount_text keeps the original wording. We never invent a number.
+  2. Conditional fees (late fee) -> category="conditional" plus a `condition`
+     saying WHEN it applies. The calculator never adds these to monthly cost.
+  3. Deposits are their own category, with is_refundable. A NON-refundable
+     "deposit" is really a one-time fee, and the calculator treats it that way.
+  4. source_quote must be copied exactly so the verifier can find it in the
+     PDF text. A paraphrase can't be checked, so it can't be trusted.
 
-Example from a real lease:
-    "Tenant shall pay a monthly pest control fee of $15.00, billed with rent."
-should become something like:
-    Fee(name="Pest control", amount=15.0, frequency="monthly",
-        category="recurring", is_conditional=False,
-        source_quote="monthly pest control fee of $15.00", page=3)
-
-Design questions to think about while writing Fee (we'll discuss your answers):
-  1. Some fees have no fixed amount ("actual cost of repairs"). How do you
-     represent "unknown amount" without inventing a number?
-  2. A late fee only happens IF you pay late. How do you mark that so the
-     calculator doesn't add it to monthly cost?
-  3. A deposit is money you (maybe) get back. Is it a "fee"? Same category?
-  4. Why must source_quote be an EXACT copy of the lease text, not a summary?
-     (Hint: think about the verifier we build on Day 2.)
-
-Fill in the TODOs. Delete the `raise` line when Fee is ready.
+Note: amount is a float here because this is what the LLM fills in (JSON has
+no Decimal type). The calculator converts to Decimal before doing any math.
 """
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-# --- Allowed values. Literal means the LLM can ONLY return one of these. ---
 FeeFrequency = Literal[
-    # TODO: e.g. "monthly", "one_time", ... add what you see in real leases
+    "monthly",
+    "one_time",
+    "daily",  # e.g. "$10 per additional day" late fees
+    "annual",
+    "per_occurrence",  # each time something happens (returned check, lock change)
 ]
 
 FeeCategory = Literal[
-    # TODO: recurring, one-time, deposit, conditional, optional, penalty?
+    "recurring",  # mandatory, paid every period no matter what (rent, trash, pet rent)
+    "one_time",  # paid once for sure (admin fee, mandatory move-out cleaning)
+    "deposit",  # money held by landlord; may or may not come back
+    "conditional",  # only if something happens (late fee, early termination, lost keys)
+    "optional",  # tenant chooses it (reserved parking, storage unit)
 ]
 
 
 class Fee(BaseModel):
-    # TODO: name — short label, e.g. "Pest control"
-    # TODO: amount — dollars. What type if it can be unknown? (see question 1)
-    # TODO: frequency: FeeFrequency
-    # TODO: category: FeeCategory
-    # TODO: is_conditional — and maybe a field saying WHAT the condition is
-    # TODO: source_quote — exact text copied from the lease
-    # TODO: page — page number where the quote appears
-    #
-    # Tip: Field(description="...") text gets sent to the LLM as instructions,
-    # so write descriptions as if you're explaining the field to a person.
-    pass
+    name: str = Field(
+        description="Short label for the fee as the lease calls it, e.g. 'Pest control fee'."
+    )
+    amount: float | None = Field(
+        description=(
+            "Dollar amount as a number, e.g. 15.0 for $15.00. Use null if the lease gives no "
+            "fixed dollar figure (e.g. 'actual cost', 'two months' rent'). Never estimate."
+        )
+    )
+    amount_text: str | None = Field(
+        default=None,
+        description=(
+            "How the lease words the amount when it isn't a plain fixed number, e.g. "
+            "'two (2) months' rent', 'Landlord's actual cost', '$50.00 plus $10.00 per day'."
+        ),
+    )
+    frequency: FeeFrequency = Field(description="How often this fee is charged.")
+    category: FeeCategory = Field(
+        description=(
+            "recurring = mandatory every period; one_time = paid once for certain; "
+            "deposit = held by landlord; conditional = only if an event happens "
+            "(late payment, breaking the lease, lost keys); optional = tenant chooses it."
+        )
+    )
+    condition: str | None = Field(
+        default=None,
+        description="For conditional fees: the event that triggers it, e.g. 'rent paid after the 3rd'.",
+    )
+    is_refundable: bool | None = Field(
+        default=None,
+        description="For deposits only: true if the lease says it can be returned, false if non-refundable.",
+    )
+    source_quote: str = Field(
+        description=(
+            "The exact sentence or phrase from the lease that states this fee, copied word for "
+            "word. Do not paraphrase, fix typos, or combine text from different places."
+        )
+    )
+    page: int = Field(description="Page number where source_quote appears (from the [Page N] markers).")
+
+    @model_validator(mode="after")
+    def conditional_needs_condition(self) -> "Fee":
+        # Pydantic runs this after the fields are filled. Catches lazy LLM output.
+        if self.category == "conditional" and not self.condition:
+            raise ValueError("conditional fees must say what triggers them in `condition`")
+        return self
 
 
 class FeeExtraction(BaseModel):
     """Top-level wrapper: the LLM returns one of these per lease."""
 
     fees: list[Fee] = Field(description="Every financial obligation found in the lease.")
-
-
-raise NotImplementedError("Fee schema not written yet — see TODOs in app/schemas.py")

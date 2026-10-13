@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.parser import parse_pdf  # noqa: E402
+from app.schemas import FeeExtraction  # noqa: E402
 
 load_dotenv()
 
@@ -36,7 +37,7 @@ class LeaseBasics(BaseModel):
     lease_start: str | None = Field(description="Lease start date as written in the lease.")
     lease_end: str | None = Field(description="Lease end date as written in the lease.")
     landlord_name: str | None = Field(description="Landlord or property manager name.")
-
+    parking_fee: float | None = Field(description="Monthly parking fee")
 
 def main(pdf_path: str) -> None:
     api_key = os.getenv("GROQ_API_KEY")
@@ -46,7 +47,7 @@ def main(pdf_path: str) -> None:
     doc = parse_pdf(pdf_path)
 
     # Step 1: tell the model the exact shape we want, using Pydantic's JSON schema.
-    schema = json.dumps(LeaseBasics.model_json_schema(), indent=2)
+    schema = json.dumps(FeeExtraction.model_json_schema(), indent=2)
     system = (
         "You extract facts from rental leases. Reply with ONLY a JSON object "
         f"matching this JSON schema:\n{schema}\n"
@@ -75,7 +76,7 @@ def main(pdf_path: str) -> None:
 
     # Step 3: validate. This is the line that catches bad/hallucinated shapes.
     try:
-        basics = LeaseBasics.model_validate_json(raw)
+        basics = FeeExtraction.model_validate_json(raw)
     except ValidationError as e:
         sys.exit(f"Model reply didn't match the schema:\n{e}")
 
